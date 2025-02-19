@@ -85,18 +85,24 @@ class SFTDataset(Dataset):
         )
 
     def _generate_loss_mask(self, input_ids):
+        # 初始化动态损失掩码
         loss_mask = [0] * len(input_ids)
         i = 0
+        # 遍历输入文本，生成损失掩码
         while i < len(input_ids):
+            # 如果当前位置是对话开始标记
             if input_ids[i:i + len(self.bos_id)] == self.bos_id:
                 start = i + len(self.bos_id)
                 end = start
+                # 寻找对话结束标记
                 while end < len(input_ids):
                     if input_ids[end:end + len(self.eos_id)] == self.eos_id:
                         break
                     end += 1
+                # 标记对话中的文本位置
                 for j in range(start + 1, min(end + len(self.eos_id) + 1, self.max_length)):
                     loss_mask[j] = 1
+                # 更新当前位置
                 i = end + len(self.eos_id) if end < len(input_ids) else len(input_ids)
             else:
                 i += 1

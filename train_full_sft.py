@@ -21,6 +21,15 @@ from model.dataset import SFTDataset
 
 warnings.filterwarnings('ignore')
 
+'''
+有监督微调(Supervised Fine-Tuning):
+经过预训练(pre-training)，LLM此时已经掌握了大量知识，然而此时它只会无脑地词语接龙，还不会与人聊天。 
+SFT阶段就需要把半成品LLM施加一个自定义的聊天模板进行微调。 
+例如模型遇到这样的模板【问题->回答，问题->回答】后不再无脑接龙，而是意识到这是一段完整的对话结束。 
+称这个过程为指令微调，就如同让已经学富五车的「牛顿」先生适应21世纪智能手机的聊天习惯，学习屏幕左侧是对方消息，右侧是本人消息这个规律。 
+在训练时，MiniMind的指令和回答长度被截断在512，是为了节省显存空间。就像我们学习时，会先从短的文章开始，当学会写作200字作文后，800字文章也可以手到擒来。 
+在需要长度拓展时，只需要准备少量的2k/4k/8k长度对话数据进行进一步微调即可（此时最好配合RoPE-NTK的基准差值）。
+'''
 
 def Logger(content):
     if not ddp or dist.get_rank() == 0:
@@ -28,8 +37,8 @@ def Logger(content):
 
 
 def get_lr(current_step, total_steps, lr):
+    # CosineAnnealingLR是PyTorch提供的一个余弦退火学习率调度器，可以在训练过程中对学习率进行余弦退火调度。S
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
-
 
 def train_epoch(epoch, wandb):
     loss_fct = nn.CrossEntropyLoss(reduction='none')
@@ -41,7 +50,7 @@ def train_epoch(epoch, wandb):
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-
+        # 计算model的损失，包括主损失和辅助损失，并进行适当的归一化和调整，方便后面的梯度更新操作
         with ctx:
             res = model(X)
             loss = loss_fct(
@@ -54,7 +63,7 @@ def train_epoch(epoch, wandb):
             loss = loss / args.accumulation_steps
 
         scaler.scale(loss).backward()
-
+        # 检查当前步骤是否是累积步数的整数倍
         if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -80,7 +89,7 @@ def train_epoch(epoch, wandb):
                 wandb.log({"loss": loss,
                            "lr": optimizer.param_groups[-1]['lr'],
                            "epoch_Time": spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60})
-
+        
         if (step + 1) % args.save_interval == 0 and (not ddp or dist.get_rank() == 0):
             model.eval()
             moe_path = '_moe' if lm_config.use_moe else ''
@@ -150,11 +159,12 @@ if __name__ == "__main__":
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
     tokens_per_iter = args.batch_size * lm_config.max_seq_len
+    # 设置随机种子
     torch.manual_seed(1337)
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
     args.wandb_run_name = f"MiniMind-Full-SFT-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
-
+    
     ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast()
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
     ddp_local_rank, DEVICE = 0, "cuda:0"
@@ -172,18 +182,20 @@ if __name__ == "__main__":
     model, tokenizer = init_model(lm_config)
 
     train_ds = SFTDataset(args.data_path, tokenizer, max_length=lm_config.max_seq_len)
+    # 初始化一个数据加载器，用于加载训练数据
     train_sampler = DistributedSampler(train_ds) if ddp else None
     train_loader = DataLoader(
         train_ds,
-        batch_size=args.batch_size,
-        pin_memory=True,
-        drop_last=False,
-        shuffle=False,
-        num_workers=args.num_workers,
-        sampler=train_sampler
+        batch_size=args.batch_size, # 每个批次加载的数据量
+        pin_memory=True, # 是否将数据加载到固定内存中，可以加速数据加载
+        drop_last=False, # 是否丢弃最后一个批次，如果数据量不能被批次大小整除
+        shuffle=False, # 是否对数据进行洗牌, DistributedSampler已经对数据进行了洗牌, 这里不需要再次洗牌
+        num_workers=args.num_workers, # 数据加载器使用的进程数
+        sampler=train_sampler # 数据加载器使用的采样器
     )
-
+    # 初始化一个梯度缩放器，用于在混合精度训练中对梯度进行缩放
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ['float16', 'bfloat16']))
+    # 初始化一个AdamW优化器，用于对模型的参数进行优化
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     if ddp:
