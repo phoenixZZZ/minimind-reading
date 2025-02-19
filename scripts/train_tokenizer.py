@@ -39,7 +39,7 @@ def train_tokenizer():
         vocab_size=6400,
         special_tokens=special_tokens,  # 确保这三个token被包含
         show_progress=True,
-        initial_alphabet=pre_tokenizers.ByteLevel.alphabet()
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet() # 初始字符集，通常用于确保某些字符不会被拆分。
     )
 
     # 读取文本数据

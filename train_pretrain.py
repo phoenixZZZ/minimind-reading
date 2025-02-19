@@ -32,6 +32,7 @@ def get_lr(current_step, total_steps, lr):
 
 
 def train_epoch(epoch, wandb):
+    # 交叉熵损失函数
     loss_fct = nn.CrossEntropyLoss(reduction='none')
     start_time = time.time()
     for step, (X, Y, loss_mask) in enumerate(train_loader):
@@ -101,7 +102,7 @@ def init_model(lm_config):
     Logger(f'LLM总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     return model, tokenizer
 
-
+# 初始化 nccl分布式集群训练
 def init_distributed_mode():
     if not ddp: return
     global ddp_local_rank, DEVICE
@@ -127,13 +128,13 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain")
     parser.add_argument("--num_workers", type=int, default=1)
-    parser.add_argument("--ddp", action="store_true")
+    parser.add_argument("--ddp", action="store_true") # 是否进行集群部署
     parser.add_argument("--accumulation_steps", type=int, default=8)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--warmup_iters", type=int, default=0)
     parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--save_interval", type=int, default=100)
-    parser.add_argument('--local_rank', type=int, default=-1)
+    parser.add_argument('--local_rank', type=int, default=-1) # 是否单机部署
     parser.add_argument('--dim', default=512, type=int)
     parser.add_argument('--n_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
