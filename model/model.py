@@ -295,11 +295,16 @@ class MiniMindLM(PreTrainedModel):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
         self.tok_embeddings.weight = self.output.weight
+        
+        # 位置编码，用于在Transformer中引入序列信息，此处是为了初始化位置编码缓冲区
         self.register_buffer("pos_cis",
                              precompute_pos_cis(dim=params.dim // params.n_heads, theta=params.rope_theta),
                              persistent=False)
+        # 用于存储模型输出
         self.OUT = CausalLMOutputWithPast()
 
+    # 前向传播：前向传播用于计算模型的输出，而反向传播用于计算梯度并更新模型参数。
+    # 在 PyTorch 中，反向传播的计算是由框架自动处理的，因此通常不需要在模型中显式实现反向传播逻辑。
     def forward(self,
                 input_ids: Optional[torch.Tensor] = None,
                 past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
@@ -309,7 +314,9 @@ class MiniMindLM(PreTrainedModel):
         start_pos = args.get('start_pos', 0)
         h = self.dropout(self.tok_embeddings(input_ids))
         pos_cis = self.pos_cis[start_pos:start_pos + input_ids.size(1)]
+        # past_kvs: 用于存储每一层的 past_key_values，这些值在 Transformer 模型中用于加速自回归生成任务（如语言模型的文本生成）。
         past_kvs = []
+        # 逐层计算
         for l, layer in enumerate(self.layers):
             h, past_kv = layer(
                 h, pos_cis,
@@ -318,13 +325,18 @@ class MiniMindLM(PreTrainedModel):
             )
             past_kvs.append(past_kv)
         logits = self.output(self.norm(h))
+        # 计算辅助损失，辅助损失只在MOE训练时使用
+        # 辅助损失（aux_loss）：辅助损失是一种用于帮助模型训练的技术，可以在训练过程中引入额外的损失函数，以提高模型的泛化能力。
         aux_loss = sum(l.feed_forward.aux_loss for l in self.layers if isinstance(l.feed_forward, MOEFeedForward))
         self.OUT.__setitem__('logits', logits)
         self.OUT.__setitem__('aux_loss', aux_loss)
         self.OUT.__setitem__('past_key_values', past_kvs)
         return self.OUT
-
-    @torch.inference_mode()
+    
+    # PyTorch 会禁用梯度计算和一些其他与训练相关的功能。
+    # 这意味着在推理模式下，模型的前向传播过程不会计算梯度，从而节省内存和计算资源。
+    # 这对于只需要进行推理的场景非常有用，例如在部署模型进行预测时。
+    @torch.inference_mode() 
     def generate(self, input_ids, eos_token_id=2, max_new_tokens=1024, temperature=0.75, top_p=0.90,
                  stream=False, rp=1., use_cache=True, pad_token_id=0, **args):
         # 流式生成
@@ -332,6 +344,11 @@ class MiniMindLM(PreTrainedModel):
             return self._stream(input_ids, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache, **args)
 
         # 直接生成
+        '''
+        - 在非流式生成模式下，模型会一次性生成所有的文本，然后返回整个生成的序列。
+        - 这种方式适用于需要完整生成结果的场景，例如生成一段完整的文本或回答一个问题。
+        - 优点是实现简单，缺点是对于长文本生成可能会占用较多的内存和计算资源。
+        '''
         generated = []
         for i in range(input_ids.size(0)):
             non_pad = input_ids[i][input_ids[i] != pad_token_id].unsqueeze(0)
@@ -350,6 +367,11 @@ class MiniMindLM(PreTrainedModel):
         return torch.cat(generated, dim=0)
 
     def _stream(self, input_ids, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache, **args):
+        '''
+        在流式生成模式下，模型会逐步生成文本，每次生成一个或几个 token，并可以在生成过程中将生成的部分结果返回。
+        这种方式适用于需要实时生成和处理生成结果的场景，例如实时对话系统或逐步生成长文本。
+        优点是可以实时处理生成结果，减少内存和计算资源的占用，缺点是实现相对复杂，需要处理生成过程中的状态维护。
+        '''
         start, first_seq, past_kvs = input_ids.shape[1], True, None
         while input_ids.shape[1] < max_new_tokens - 1:
             if first_seq or not use_cache:
