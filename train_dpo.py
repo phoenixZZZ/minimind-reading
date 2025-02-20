@@ -21,6 +21,21 @@ from model.dataset import DPODataset
 
 warnings.filterwarnings('ignore')
 
+# 未验证，内存过低做不了; 回来有更高VRAM机器再进行验证
+'''
+人类反馈强化学习(Reinforcement Learning from Human Feedback, RLHF)
+在前面的训练步骤中，模型已经具备了基本的对话能力，但是这样的能力完全基于单词接龙，缺少正反样例的激励。 
+模型此时尚未知什么回答是好的，什么是差的。我们希望它能够更符合人的偏好，降低让人类不满意答案的产生概率。 
+这个过程就像是让模型参加新的培训，从优秀员工的作为例子，消极员工作为反例，学习如何更好地回复。 
+此处使用的是RLHF系列之-直接偏好优化(Direct Preference Optimization, DPO)。 
+与PPO(Proximal Policy Optimization)这种需要奖励模型、价值模型的RL算法不同； DPO通过推导PPO奖励模型的显式解，
+把在线奖励模型换成离线数据，Ref模型输出可以提前保存。 
+DPO性能几乎不变，只用跑 actor_model 和 ref_model 两个模型，大大节省显存开销和增加训练稳定性。
+
+DPO: 不同于PPO或GRPO，它不存在reward函数，纯是通过人类反馈的正负样本来进行训练，
+这样做的好处是不需要reward函数，也不需要价值函数，只需要人类的反馈即可。
+但是这样做的缺点是，需要大量的人类反馈数据，而且人类反馈的数据质量也会影响模型的训练效果。
+'''
 
 def Logger(content):
     if not ddp or dist.get_rank() == 0:
@@ -28,9 +43,10 @@ def Logger(content):
 
 
 def get_lr(current_step, total_steps, lr):
+    # CosineAnnealingLR是PyTorch提供的一个余弦退火学习率调度器，可以在训练过程中对学习率进行余弦退火调度。
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
-
+# 将模型的输出转换为对应标签的概率值，从而可以用于后续的损失计算或评估。
 def logits_to_probs(logits, labels):
     # logits shape: (batch_size, seq_len, vocab_size)
     # labels shape: (batch_size, seq_len)
@@ -39,7 +55,9 @@ def logits_to_probs(logits, labels):
     probs = torch.gather(log_probs, dim=2, index=labels.unsqueeze(2)).squeeze(-1)
     return probs
 
-
+# 函数通过计算参考模型和当前模型在 chosen 和 rejected 数据上的对数比率差值，
+# 并应用对数 sigmoid 函数，来计算 DPO 损失。
+# 这种损失函数可以用于优化模型，使其更符合用户的偏好。
 def dpo_loss(ref_probs, probs, beta):
     # ref_probs 和 probs 都是 shape: (batch_size, seq_len)
     # 计算每个样本的平均概率
@@ -77,6 +95,9 @@ def train_epoch(epoch, wandb):
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
+        # 即在多个步骤后再进行一次梯度更新，从而有效地增加批量大小而不增加内存消耗。
+        # 这个代码片段展示了如何在训练过程中计算参考模型和当前模型的概率，
+        # 并使用 DPO 损失函数来优化模型，使其更符合用户的偏好。
         with ctx:
             with torch.no_grad():
                 ref_outputs = ref_model(x)
@@ -94,6 +115,7 @@ def train_epoch(epoch, wandb):
 
         if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
+            # 对梯度进行裁剪，以防止梯度爆炸。
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             scaler.step(optimizer)
             scaler.update()

@@ -127,6 +127,31 @@ class SFTDataset(Dataset):
 
 
 class DPODataset(Dataset):
+    '''
+    struction of the dataset:
+    {
+        "chosen": [
+            {
+            "content": "A bushel of watermelons weighs 55 pounds. ...",
+            "role": "user"
+            },
+            {
+            "content": "To solve this problem, ...",
+            "role": "assistant"
+            }
+        ],
+        "rejected": [
+            {
+            "content": "A bushel of watermelons weighs 55 pounds. ...",
+            "role": "user"
+            },
+            {
+            "content": "To answer this question, ...",
+            "role": "assistant"
+            }
+        ]
+    }
+    '''
     def __init__(self, file_path, tokenizer, max_length=4096):
         super().__init__()
         self.tokenizer = tokenizer
@@ -167,9 +192,12 @@ class DPODataset(Dataset):
 
         rejected_input_ids = rejected_encoding['input_ids']
         rejected_loss_mask = self._generate_loss_mask(rejected_input_ids)
+        # 用户选择的对话
         x_chosen = torch.tensor(chosen_input_ids[:-1], dtype=torch.long)
         y_chosen = torch.tensor(chosen_input_ids[1:], dtype=torch.long)
         mask_chosen = torch.tensor(chosen_loss_mask[1:], dtype=torch.long)
+
+        # 用户拒绝的对话
         x_rejected = torch.tensor(rejected_input_ids[:-1], dtype=torch.long)
         y_rejected = torch.tensor(rejected_input_ids[1:], dtype=torch.long)
         mask_rejected = torch.tensor(rejected_loss_mask[1:], dtype=torch.long)
@@ -182,7 +210,7 @@ class DPODataset(Dataset):
             'y_rejected': y_rejected,
             'mask_rejected': mask_rejected
         }
-
+    # 生成动态损失掩码
     def _generate_loss_mask(self, input_ids):
         loss_mask = [0] * len(input_ids)
         i = 0
