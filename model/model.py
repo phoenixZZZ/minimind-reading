@@ -364,6 +364,7 @@ class MiniMindLM(PreTrainedModel):
                 dim=-1)
             for seq in generated
         ]
+        # 将生成的文本序列拼接成一个张量
         return torch.cat(generated, dim=0)
 
     def _stream(self, input_ids, eos_token_id, max_new_tokens, temperature, top_p, rp, use_cache, **args):

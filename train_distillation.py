@@ -29,13 +29,20 @@ def Logger(content):
 def get_lr(current_step, total_steps, lr):
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
-
+# 蒸馏损失函数
 def distillation_loss_fn(student_logits, teacher_logits, temperature=1.0, reduction='batchmean'):
+    # 上下文管理器禁用梯度计算，节省资源
     with torch.no_grad():
+        # 计算教师模型的概率分布，同时使用detach()方法防止梯度传播
         teacher_probs = F.softmax(teacher_logits / temperature, dim=-1).detach()
 
+    # 计算学生模型的概率分布，使用log_softmax函数(是在 softmax 之后再取对数，以提高数值稳定性和计算效率)计算log概率;
+    # 由于log_softmax函数的输入是logits，因此需要除以温度参数temperature
     student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
 
+    # 计算学生模型的对数概率分布与教师模型的概率分布之间的 Kullback-Leibler 散度（KL 散度），
+    # 并根据 reduction 参数进行相应的归约操作。
+    # 最后，函数返回 KL 散度乘以温度参数的平方，作为最终的蒸馏损失。
     kl = F.kl_div(
         student_log_probs,
         teacher_probs,
@@ -48,7 +55,9 @@ def train_epoch(epoch, wandb, alpha=0.0, temperature=1.0):
     start_time = time.time()
 
     if teacher_model is not None:
+        # 将教师模型切换到评估模式
         teacher_model.eval()
+        # 禁用教师模型的梯度计算
         teacher_model.requires_grad_(False)
 
     for step, (X, Y, loss_mask) in enumerate(train_loader):
@@ -75,6 +84,7 @@ def train_epoch(epoch, wandb, alpha=0.0, temperature=1.0):
 
         # ========== 计算损失 ==========
         # 1) Ground-Truth CE Loss（可选）
+        # 作用：让模型学习真实标签
         loss_mask_flat = loss_mask.view(-1)
         ce_loss = F.cross_entropy(
             student_logits.view(-1, student_logits.size(-1)),
@@ -87,6 +97,7 @@ def train_epoch(epoch, wandb, alpha=0.0, temperature=1.0):
             ce_loss += res.aux_loss
 
         # 2) Distillation Loss（可选）
+        # 作用：让模型学习教师模型的知识
         if teacher_model is not None:
             # 只在有效token位置做蒸馏
             distill_loss = distillation_loss_fn(
@@ -95,6 +106,7 @@ def train_epoch(epoch, wandb, alpha=0.0, temperature=1.0):
                 temperature=temperature
             )
         else:
+            # 无教师模型时，Distill Loss为0
             distill_loss = torch.tensor(0.0, device=args.device)
 
         # 3) 总损失 = alpha * CE + (1-alpha) * Distill
@@ -156,7 +168,8 @@ def init_student_model(lm_config):
 
     return model, tokenizer
 
-
+# 初始化教师模型
+# 由于MiniMind同系列本身并不存在强大的教师模型，因此白盒蒸馏代码仅作为学习参考
 def init_teacher_model(lm_config):
     model = MiniMindLM(lm_config)
     moe_path = '_moe' if lm_config.use_moe else ''
@@ -185,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default="out")
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch_size", type=int, default=32)
+    # 对于学生模型来说，其实相当于再训练过程，dataset：sft-mini-512 ==> sft-1024;故学习率应与SFT训练时一致。
     parser.add_argument("--learning_rate", type=float, default=5e-6)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
