@@ -14,8 +14,15 @@ from model.LMConfig import LMConfig
 from model.dataset import SFTDataset
 from model.model_lora import *
 
-warnings.filterwarnings('ignore')
+'''
+LoRA是一种高效的参数高效微调（Parameter-Efficient Fine-Tuning, PEFT）方法，旨在通过低秩分解的方式对预训练模型进行微调。 
+相比于全参数微调（Full Fine-Tuning），LoRA 只需要更新少量的参数。 
+LoRA 的核心思想是：在模型的权重矩阵中引入低秩分解，仅对低秩部分进行更新，而保持原始预训练权重不变。
+此时【基础模型+LoRA模型】即可获得医疗场景模型增强的能力，相当于为基础模型增加了LoRA外挂，这个过程并不损失基础模型的本身能力。
+只要有所需要的数据集，也可以full_sft全参微调（需要进行通用知识的混合配比，否则过拟合领域数据会让模型变傻，损失通用性）
+'''
 
+warnings.filterwarnings('ignore')
 
 # Logger function
 def Logger(content):
@@ -29,6 +36,7 @@ def get_lr(current_step, total_steps, lr):
 
 # 代码和full_sft「几乎」一致
 def train_epoch(epoch, wandb):
+    # 交叉熵损失函数
     loss_fct = nn.CrossEntropyLoss(reduction='none')
     start_time = time.time()
     for step, (X, Y, loss_mask) in enumerate(train_loader):
@@ -88,7 +96,9 @@ def init_model(lm_config):
     tokenizer = AutoTokenizer.from_pretrained('./model/minimind_tokenizer')
     model = MiniMindLM(lm_config)
     moe_path = '_moe' if lm_config.use_moe else ''
-    ckp = f'./out/rlhf_{lm_config.dim}{moe_path}.pth'
+    # 读取预训练模型:因为我显存原因，rlhf没有正常训练完成，选择用full_sft模型代替
+    ckp = f'./out/full_sft_{lm_config.dim}{moe_path}.pth'
+    # ckp = f'./out/rlhf_{lm_config.dim}{moe_path}.pth'
     state_dict = torch.load(ckp, map_location=args.device)
     model.load_state_dict(state_dict, strict=False)
     return model.to(args.device), tokenizer
@@ -128,14 +138,17 @@ if __name__ == "__main__":
     parser.add_argument('--n_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--use_moe', default=False, type=bool)
-    parser.add_argument("--data_path", type=str, default="./dataset/lora_identity.jsonl")
-    parser.add_argument("--lora_name", type=str, default="lora_identity", help="根据任务保存成lora_(英文/医学/心理...)")
+    # parser.add_argument("--data_path", type=str, default="./dataset/lora_identity.jsonl")
+    # parser.add_argument("--lora_name", type=str, default="lora_identity", help="根据任务保存成lora_(英文/医学/心理...)")
+    parser.add_argument("--data_path", type=str, default="./dataset/lora_medical.jsonl")
+    parser.add_argument("--lora_name", type=str, default="lora_medical", help="根据任务保存成lora_(英文/医学/心理...)")
     args = parser.parse_args()
 
     lm_config = LMConfig(dim=args.dim, n_layers=args.n_layers, max_seq_len=args.max_seq_len, use_moe=args.use_moe)
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(f'{args.save_dir}/lora', exist_ok=True)
     tokens_per_iter = args.batch_size * lm_config.max_seq_len
     torch.manual_seed(1337)
     device_type = "cuda" if "cuda" in args.device else "cpu"
@@ -158,7 +171,7 @@ if __name__ == "__main__":
     model, tokenizer = init_model(lm_config)
     apply_lora(model)
 
-    total_params = sum(p.numel() for p in model.parameters())  # 总参数数量
+    total_params = sum(p.numel() for p in model.parameters())  # 总参数数量 
     lora_params_count = sum(p.numel() for name, p in model.named_parameters() if 'lora' in name)  # LoRA 参数数量
     if not ddp or dist.get_rank() == 0:
         print(f"LLM 总参数量: {total_params}")
@@ -175,6 +188,7 @@ if __name__ == "__main__":
 
     # 只对 LoRA 参数进行优化
     optimizer = optim.AdamW(lora_params, lr=args.learning_rate)
+
     train_ds = SFTDataset(args.data_path, tokenizer, max_length=lm_config.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if ddp else None
     train_loader = DataLoader(
